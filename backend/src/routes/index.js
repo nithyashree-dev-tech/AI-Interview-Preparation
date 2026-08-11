@@ -1,18 +1,19 @@
 const express = require("express");
 
-const router = express.Router();
-
 const authRoutes = require("./authRoutes");
+const questionRoutes = require("./questionRoutes");
+
+const router = express.Router();
 
 router.use("/auth", authRoutes);
 
-router.get("/health", (req, res) => {
+router.use("/questions", questionRoutes);
 
-    res.json({
+router.get("/health", (req, res) => {
+    res.status(200).json({
         success: true,
         message: "API is healthy"
     });
-
 });
 
 module.exports = router;

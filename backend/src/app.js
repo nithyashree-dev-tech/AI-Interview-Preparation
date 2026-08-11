@@ -32,3 +32,6 @@ app.get("/", (req, res) => {
 app.use("/api/v1", apiRoutes);
 
 module.exports = app;
+const errorHandler = require("./middleware/errorMiddleware");
+
+app.use(errorHandler);
