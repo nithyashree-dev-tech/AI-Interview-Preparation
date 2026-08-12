@@ -66,6 +66,75 @@ const createQuestionValidation = [
         .withMessage("Hints must be an array")
 ];
 
+
+// Validation for updating a question
+// All fields are optional because PUT/PATCH update requests
+// may contain only the fields that need to be changed.
+
+const updateQuestionValidation = [
+    body("question")
+        .optional()
+        .trim()
+        .isLength({ min: 10 })
+        .withMessage("Question must be at least 10 characters"),
+
+    body("category")
+        .optional()
+        .isIn([
+            "Technical",
+            "HR",
+            "Behavioral",
+            "Aptitude",
+            "Coding",
+            "System Design"
+        ])
+        .withMessage("Invalid category"),
+
+    body("difficulty")
+        .optional()
+        .isIn(["Easy", "Medium", "Hard"])
+        .withMessage("Invalid difficulty"),
+
+    body("type")
+        .optional()
+        .isIn([
+            "Conceptual",
+            "Problem Solving",
+            "Coding",
+            "Scenario Based",
+            "Behavioral"
+        ])
+        .withMessage("Invalid question type"),
+
+    body("expectedAnswer")
+        .optional()
+        .trim()
+        .isLength({ min: 10 })
+        .withMessage("Expected answer must be at least 10 characters"),
+
+    body("company")
+        .optional()
+        .trim(),
+
+    body("tags")
+        .optional()
+        .isArray()
+        .withMessage("Tags must be an array"),
+
+    body("evaluationCriteria")
+        .optional()
+        .isArray()
+        .withMessage("Evaluation criteria must be an array"),
+
+    body("hints")
+        .optional()
+        .isArray()
+        .withMessage("Hints must be an array")
+];
+
+
 module.exports = {
-    createQuestionValidation
+    createQuestionValidation,
+    updateQuestionValidation
 };
+
