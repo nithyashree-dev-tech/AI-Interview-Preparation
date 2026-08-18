@@ -93,8 +93,23 @@ const getProfile = asyncHandler(async (req, res) => {
     });
 });
 
+// Get Current User
+const getCurrentUser = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id).select("-password");
+
+    if (!user) {
+        throw new ApiError(404, "User not found");
+    }
+
+    res.status(200).json({
+        success: true,
+        user,
+    });
+});
+
 module.exports = {
     registerUser,
     loginUser,
     getProfile,
+    getCurrentUser,
 };

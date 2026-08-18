@@ -1,3 +1,4 @@
+const { evaluateAnswer } = require("../services/ai/evaluationService");
 const Interview = require("../models/Interview");
 const Question = require("../models/Question");
 
@@ -107,17 +108,15 @@ const startInterview = asyncHandler(async (req, res) => {
         interview
     });
 });
-// Submit Answer
+//submit answer
 const submitAnswer = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { answer } = req.body;
 
-    // Validate answer
     if (!answer || !answer.trim()) {
         throw new ApiError(400, "Answer is required");
     }
 
-    // Find interview belonging to current user
     const interview = await Interview.findOne({
         _id: id,
         user: req.user._id
@@ -127,7 +126,6 @@ const submitAnswer = asyncHandler(async (req, res) => {
         throw new ApiError(404, "Interview not found");
     }
 
-    // Check interview status
     if (interview.status !== "in_progress") {
         throw new ApiError(
             400,
@@ -135,7 +133,6 @@ const submitAnswer = asyncHandler(async (req, res) => {
         );
     }
 
-    // Check whether questions exist
     if (!interview.questions.length) {
         throw new ApiError(
             400,
@@ -143,7 +140,6 @@ const submitAnswer = asyncHandler(async (req, res) => {
         );
     }
 
-    // Get current question
     const currentQuestion =
         interview.questions[interview.currentQuestionIndex];
 
@@ -154,7 +150,6 @@ const submitAnswer = asyncHandler(async (req, res) => {
         );
     }
 
-    // Prevent answering the same question twice
     const alreadyAnswered = interview.answers.some(
         (item) =>
             item.question.toString() ===
@@ -168,42 +163,151 @@ const submitAnswer = asyncHandler(async (req, res) => {
         );
     }
 
-    // Store answer
-    interview.answers.push({
-        question: currentQuestion._id,
-        answer: answer.trim(),
-        answeredAt: new Date()
+    /*
+     * Step 1:
+     * Ask the AI to evaluate the candidate's answer.
+     */
+    const evaluation = await evaluateAnswer({
+        question: currentQuestion.question,
+
+        expectedAnswer:
+            currentQuestion.expectedAnswer,
+
+        candidateAnswer:
+            answer.trim(),
+
+        evaluationCriteria:
+            currentQuestion.evaluationCriteria
     });
 
-    // Move to next question
+
+    /*
+     * Step 2:
+     * Store answer + AI evaluation.
+     */
+    interview.answers.push({
+        question: currentQuestion._id,
+
+        answer: answer.trim(),
+
+        answeredAt: new Date(),
+
+        evaluation: {
+            score: evaluation.score,
+
+            technicalAccuracy:
+                evaluation.technicalAccuracy,
+
+            relevance:
+                evaluation.relevance,
+
+            clarity:
+                evaluation.clarity,
+
+            completeness:
+                evaluation.completeness,
+
+            feedback:
+                evaluation.feedback,
+
+            strengths:
+                evaluation.strengths,
+
+            weaknesses:
+                evaluation.weaknesses,
+
+            suggestions:
+                evaluation.suggestions,
+
+            evaluatedAt: new Date()
+        }
+    });
+
+
+    /*
+     * Step 3:
+     * Move to next question.
+     */
     interview.currentQuestionIndex += 1;
 
-    // Check whether interview is complete
+
+    /*
+     * Step 4:
+     * Check whether this was the final question.
+     */
     if (
         interview.currentQuestionIndex >=
         interview.questions.length
     ) {
         interview.status = "completed";
+
         interview.completedAt = new Date();
     }
 
+  if (interview.status === "completed") {
+    const scores = interview.answers
+        .map((item) => item.evaluation?.score)
+        .filter((score) => typeof score === "number");
+
+    if (scores.length > 0) {
+        const total = scores.reduce(
+            (sum, score) => sum + score,
+            0
+        );
+
+        interview.totalScore =
+            Math.round((total / scores.length) * 100) / 100;
+    }
+}
     await interview.save();
 
+
+    /*
+     * Step 5:
+     * Return the AI evaluation.
+     */
     res.status(200).json({
         success: true,
-        message: interview.status === "completed"
-            ? "Answer submitted. Interview completed."
-            : "Answer submitted successfully",
 
-        interviewId: interview._id,
+        message:
+            interview.status === "completed"
+                ? "Answer evaluated. Interview completed."
+                : "Answer evaluated successfully.",
 
-        answer: {
-            question: currentQuestion._id,
-            answer: answer.trim(),
-            answeredAt:
-                interview.answers[
-                    interview.answers.length - 1
-                ].answeredAt
+        interviewId:
+            interview._id,
+
+        question: {
+            id: currentQuestion._id,
+            question: currentQuestion.question
+        },
+
+        evaluation: {
+            score: evaluation.score,
+
+            technicalAccuracy:
+                evaluation.technicalAccuracy,
+
+            relevance:
+                evaluation.relevance,
+
+            clarity:
+                evaluation.clarity,
+
+            completeness:
+                evaluation.completeness,
+
+            feedback:
+                evaluation.feedback,
+
+            strengths:
+                evaluation.strengths,
+
+            weaknesses:
+                evaluation.weaknesses,
+
+            suggestions:
+                evaluation.suggestions
         },
 
         progress: {
@@ -220,7 +324,8 @@ const submitAnswer = asyncHandler(async (req, res) => {
                 interview.questions.length -
                 interview.answers.length,
 
-            status: interview.status
+            status:
+                interview.status
         }
     });
 });
@@ -413,9 +518,564 @@ const getInterviewById = asyncHandler(async (req, res) => {
         }
     });
 });
+// Get Interview Result
+const getInterviewResult = asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const interview = await Interview.findOne({
+        _id: id,
+        user: req.user._id
+    })
+        .populate(
+            "questions",
+            "question category difficulty type company tags expectedAnswer"
+        );
+
+    if (!interview) {
+        throw new ApiError(404, "Interview not found");
+    }
+
+    // Result should only be available after completion
+    if (interview.status !== "completed") {
+        throw new ApiError(
+            400,
+            "Interview has not been completed yet"
+        );
+    }
+
+    /*
+     * Calculate duration
+     */
+    let durationInSeconds = null;
+
+    if (interview.startedAt && interview.completedAt) {
+        durationInSeconds = Math.floor(
+            (new Date(interview.completedAt) -
+                new Date(interview.startedAt)) / 1000
+        );
+    }
+
+    /*
+     * Collect evaluations
+     */
+    const evaluations = interview.answers
+        .map((answer) => answer.evaluation)
+        .filter((evaluation) => evaluation);
+
+
+    if (evaluations.length === 0) {
+        throw new ApiError(
+            400,
+            "No evaluations are available for this interview"
+        );
+    }
+
+
+    /*
+     * Calculate average scores
+     */
+    const calculateAverage = (field) => {
+        const values = evaluations
+            .map((evaluation) => evaluation?.[field])
+            .filter((value) => typeof value === "number");
+
+        if (values.length === 0) {
+            return 0;
+        }
+
+        const total = values.reduce(
+            (sum, value) => sum + value,
+            0
+        );
+
+        return Math.round(
+            (total / values.length) * 100
+        ) / 100;
+    };
+
+
+    const overallScore =
+        calculateAverage("score");
+
+    const technicalAccuracy =
+        calculateAverage("technicalAccuracy");
+
+    const relevance =
+        calculateAverage("relevance");
+
+    const clarity =
+        calculateAverage("clarity");
+
+    const completeness =
+        calculateAverage("completeness");
+
+
+    /*
+     * Collect strengths, weaknesses
+     * and suggestions from every answer.
+     */
+    const strengths = [];
+
+    const weaknesses = [];
+
+    const suggestions = [];
+
+
+    evaluations.forEach((evaluation) => {
+
+        if (Array.isArray(evaluation.strengths)) {
+            strengths.push(
+                ...evaluation.strengths
+            );
+        }
+
+        if (Array.isArray(evaluation.weaknesses)) {
+            weaknesses.push(
+                ...evaluation.weaknesses
+            );
+        }
+
+        if (Array.isArray(evaluation.suggestions)) {
+            suggestions.push(
+                ...evaluation.suggestions
+            );
+        }
+    });
+
+
+    /*
+     * Remove duplicate feedback items.
+     */
+    const uniqueStrengths = [
+        ...new Set(strengths)
+    ];
+
+    const uniqueWeaknesses = [
+        ...new Set(weaknesses)
+    ];
+
+    const uniqueSuggestions = [
+        ...new Set(suggestions)
+    ];
+
+
+    /*
+     * Build question-by-question result.
+     */
+    const questionResults =
+        interview.answers.map((answer, index) => {
+
+            const question =
+                interview.questions.find(
+                    (question) =>
+                        question._id.toString() ===
+                        answer.question.toString()
+                );
+
+            return {
+                questionNumber: index + 1,
+
+                questionId:
+                    question?._id,
+
+                question:
+                    question?.question,
+
+                category:
+                    question?.category,
+
+                difficulty:
+                    question?.difficulty,
+
+                candidateAnswer:
+                    answer.answer,
+
+                evaluation:
+                    answer.evaluation,
+
+                answeredAt:
+                    answer.answeredAt
+            };
+        });
+
+
+    res.status(200).json({
+        success: true,
+
+        result: {
+            interviewId:
+                interview._id,
+
+            category:
+                interview.category,
+
+            difficulty:
+                interview.difficulty,
+
+            company:
+                interview.company,
+
+            status:
+                interview.status,
+
+            overallScore,
+
+            scores: {
+                technicalAccuracy,
+                relevance,
+                clarity,
+                completeness
+            },
+
+            totalQuestions:
+                interview.questions.length,
+
+            answeredQuestions:
+                interview.answers.length,
+
+            durationInSeconds,
+
+            startedAt:
+                interview.startedAt,
+
+            completedAt:
+                interview.completedAt,
+
+            summary: {
+                strengths:
+                    uniqueStrengths,
+
+                weaknesses:
+                    uniqueWeaknesses,
+
+                suggestions:
+                    uniqueSuggestions
+            },
+
+            questions:
+                questionResults
+        }
+    });
+});
+// Get Interview Dashboard
+const getInterviewDashboard = asyncHandler(async (req, res) => {
+    const userId = req.user._id;
+
+    /*
+     * Get basic interview counts
+     */
+    const [
+        totalInterviews,
+        completedInterviews,
+        inProgressInterviews
+    ] = await Promise.all([
+        Interview.countDocuments({
+            user: userId
+        }),
+
+        Interview.countDocuments({
+            user: userId,
+            status: "completed"
+        }),
+
+        Interview.countDocuments({
+            user: userId,
+            status: "in_progress"
+        })
+    ]);
+
+
+    /*
+     * Get completed interviews.
+     *
+     * We calculate averages from the stored
+     * answer evaluations.
+     */
+    const completedInterviewData =
+        await Interview.find({
+            user: userId,
+            status: "completed"
+        }).select(
+            "totalScore answers category difficulty company startedAt completedAt createdAt"
+        );
+
+
+    let totalScore = 0;
+
+    let bestScore = 0;
+
+    let totalTechnicalAccuracy = 0;
+
+    let totalRelevance = 0;
+
+    let totalClarity = 0;
+
+    let totalCompleteness = 0;
+
+    let evaluationCount = 0;
+
+
+    /*
+     * Process every completed interview.
+     */
+    completedInterviewData.forEach((interview) => {
+
+        if (
+            typeof interview.totalScore === "number"
+        ) {
+            totalScore += interview.totalScore;
+
+            bestScore = Math.max(
+                bestScore,
+                interview.totalScore
+            );
+        }
+
+
+        interview.answers.forEach((answer) => {
+
+            const evaluation =
+                answer.evaluation;
+
+            if (!evaluation) {
+                return;
+            }
+
+
+            if (
+                typeof evaluation.technicalAccuracy ===
+                "number"
+            ) {
+                totalTechnicalAccuracy +=
+                    evaluation.technicalAccuracy;
+            }
+
+
+            if (
+                typeof evaluation.relevance ===
+                "number"
+            ) {
+                totalRelevance +=
+                    evaluation.relevance;
+            }
+
+
+            if (
+                typeof evaluation.clarity ===
+                "number"
+            ) {
+                totalClarity +=
+                    evaluation.clarity;
+            }
+
+
+            if (
+                typeof evaluation.completeness ===
+                "number"
+            ) {
+                totalCompleteness +=
+                    evaluation.completeness;
+            }
+
+
+            evaluationCount++;
+        });
+    });
+
+
+    /*
+     * Helper function for averages.
+     */
+    const round = (value) =>
+        Math.round(value * 100) / 100;
+
+
+    const averageScore =
+        completedInterviews > 0
+            ? round(
+                totalScore /
+                completedInterviews
+            )
+            : 0;
+
+
+    const averageTechnicalAccuracy =
+        evaluationCount > 0
+            ? round(
+                totalTechnicalAccuracy /
+                evaluationCount
+            )
+            : 0;
+
+
+    const averageRelevance =
+        evaluationCount > 0
+            ? round(
+                totalRelevance /
+                evaluationCount
+            )
+            : 0;
+
+
+    const averageClarity =
+        evaluationCount > 0
+            ? round(
+                totalClarity /
+                evaluationCount
+            )
+            : 0;
+
+
+    const averageCompleteness =
+        evaluationCount > 0
+            ? round(
+                totalCompleteness /
+                evaluationCount
+            )
+            : 0;
+
+
+    /*
+     * Recent interviews
+     */
+    const recentInterviews =
+        await Interview.find({
+            user: userId
+        })
+            .select(
+                "category difficulty company status totalScore currentQuestionIndex questions answers startedAt completedAt createdAt"
+            )
+            .sort({
+                createdAt: -1
+            })
+            .limit(5);
+
+
+    res.status(200).json({
+        success: true,
+
+        dashboard: {
+            statistics: {
+                totalInterviews,
+
+                completedInterviews,
+
+                inProgressInterviews,
+
+                averageScore,
+
+                bestScore,
+
+                averageTechnicalAccuracy,
+
+                averageRelevance,
+
+                averageClarity,
+
+                averageCompleteness
+            },
+
+            recentInterviews:
+                recentInterviews.map(
+                    (interview) => ({
+                        _id: interview._id,
+
+                        category:
+                            interview.category,
+
+                        difficulty:
+                            interview.difficulty,
+
+                        company:
+                            interview.company,
+
+                        status:
+                            interview.status,
+
+                        totalQuestions:
+                            interview.questions.length,
+
+                        answeredQuestions:
+                            interview.answers.length,
+
+                        currentQuestionIndex:
+                            interview.currentQuestionIndex,
+
+                        totalScore:
+                            interview.totalScore,
+
+                        startedAt:
+                            interview.startedAt,
+
+                        completedAt:
+                            interview.completedAt,
+
+                        createdAt:
+                            interview.createdAt
+                    })
+                )
+        }
+    });
+});
+// Get available question count for interview configuration
+const getQuestionAvailability = asyncHandler(async (req, res) => {
+    const {
+        category = "Mixed",
+        difficulty = "Mixed",
+        company = "General"
+    } = req.query;
+
+
+    // Build the same filter used by startInterview
+    const filter = {
+        isActive: true
+    };
+
+
+    // Category filter
+    if (category !== "Mixed") {
+        filter.category = category;
+    }
+
+
+    // Difficulty filter
+    if (difficulty !== "Mixed") {
+        filter.difficulty = difficulty;
+    }
+
+
+    // Company filter
+    if (company && company !== "General") {
+        filter.company = {
+            $regex: `^${company}$`,
+            $options: "i"
+        };
+    }
+
+
+    // Count matching questions
+    const availableQuestions =
+        await Question.countDocuments(filter);
+
+
+    res.status(200).json({
+        success: true,
+
+        filters: {
+            category,
+            difficulty,
+            company
+        },
+
+        availableQuestions
+    });
+});
 module.exports = {
     startInterview,
     submitAnswer,
     getUserInterviews,
-    getInterviewById
+    getInterviewById,
+    getInterviewResult,
+    getInterviewDashboard,
+    getQuestionAvailability
 };
